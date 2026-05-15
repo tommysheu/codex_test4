@@ -18,7 +18,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 WIKI_SEEDS = [
-    "https://zh.wikipedia.org/zh-tw/%E5%8F%B0%E9%81%94%E9%9B%BB%E5%AD%90",
+    "https://zh.wikipedia.org/wiki/%E5%8F%B0%E9%81%94%E9%9B%BB%E5%AD%90",
 ]
 DELTA_SEEDS = ["https://www.deltaww.com/zh-TW/index"]
 
@@ -76,6 +76,24 @@ async def fetch_html(http: httpx.AsyncClient, url: str) -> Optional[str]:
         return r.text
     except Exception as exc:
         logger.warning("[KG] fetch failed: %s err=%s", url, exc)
+        if "wikipedia.org" in url:
+            # Wikipedia occasionally blocks locale-path requests or bot-like traffic.
+            # Retry with canonical /wiki/ path and query fallback.
+            try_urls = []
+            if "/zh-tw/" in url:
+                try_urls.append(url.replace("/zh-tw/", "/wiki/"))
+            if "/wiki/" in url:
+                title = url.split("/wiki/")[-1]
+                try_urls.append(f"https://zh.wikipedia.org/w/index.php?title={title}")
+
+            for u in list(dict.fromkeys(try_urls)):
+                try:
+                    logger.info("[KG] wikipedia retry fetching: %s", u)
+                    rr = await http.get(u, timeout=20)
+                    rr.raise_for_status()
+                    return rr.text
+                except Exception as retry_exc:
+                    logger.warning("[KG] wikipedia retry failed: %s err=%s", u, retry_exc)
         return None
 
 
@@ -120,7 +138,14 @@ async def build_kg_once() -> None:
         logger.info("[KG] already built; skip")
         return
     logger.info("[KG] build start seeds wiki=%s delta=%s", WIKI_SEEDS, DELTA_SEEDS)
-    async with httpx.AsyncClient(follow_redirects=True, headers={"User-Agent": "KGbot/1.0"}) as http:
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        },
+    ) as http:
         seeds = WIKI_SEEDS + DELTA_SEEDS
         for seed in seeds:
             logger.info("[KG] processing seed: %s", seed)
