@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KG Chatbot</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
+    .top { position: sticky; top: 0; background: #f6f7fb; padding: 8px 0; z-index: 10; }
+    #lastQ { font-weight: bold; background: #fff; padding: 12px; border-radius: 10px; }
+    #chat { background: #fff; border-radius: 10px; padding: 16px; min-height: 65vh; overflow: auto; }
+    .msg { margin-bottom: 14px; padding: 10px; border-radius: 8px; }
+    .u { background: #e8f2ff; }
+    .a { background: #f2f3f5; }
+    .input { display:flex; gap:8px; margin-top: 12px; }
+    textarea { flex:1; height: 80px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><div id="lastQ">尚未提問</div></div>
+  <div id="chat"></div>
+  <div class="input">
+    <textarea id="q" placeholder="輸入問題... Enter送出 / Shift+Enter換行"></textarea>
+    <button onclick="sendQ()">送出</button>
+  </div>
+  <div style="margin-top:8px"><input type="file" id="file" /><button onclick="uploadFile()">上傳</button></div>
+</div>
+<script>
+const sid = crypto.randomUUID();
+const chat = document.getElementById('chat');
+const q = document.getElementById('q');
+function add(role, text){
+  const d = document.createElement('div');
+  d.className = 'msg ' + (role==='user'?'u':'a');
+  d.innerHTML = marked.parse(text || '');
+  chat.appendChild(d);
+  return d;
+}
+q.addEventListener('keydown', (e)=>{
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendQ(); }
+});
+async function uploadFile(){
+  const f = document.getElementById('file').files[0];
+  if(!f) return;
+  const fd = new FormData();
+  fd.append('session_id', sid); fd.append('file', f);
+  await fetch('/api/upload', { method:'POST', body: fd });
+  alert('上傳完成');
+}
+async function sendQ(){
+  const text = q.value.trim(); if(!text) return;
+  document.getElementById('lastQ').textContent = '最近提問: ' + text;
+  add('user', text); q.value='';
+  const a = add('assistant', '思考中...');
+  const res = await fetch('/api/chat/stream', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({session_id:sid, question:text})});
+  const reader = res.body.getReader(); const dec = new TextDecoder();
+  let full='';
+  while(true){
+    const {value, done} = await reader.read(); if(done) break;
+    const chunk = dec.decode(value, {stream:true});
+    for(const part of chunk.split('\n\n')){
+      if(!part.startsWith('data: ')) continue;
+      const obj = JSON.parse(part.slice(6));
+      if(obj.type==='token'){ full += obj.content; a.innerHTML = marked.parse(full); }
+      if(obj.type==='kg_result'){
+        full += '\n\n---\n**Knowledge Graph 查詢結果**\n' + obj.content.map(x=>`- [${x.title}](${x.url})（${x.source}）`).join('\n');
+        a.innerHTML = marked.parse(full);
+      }
+    }
+  }
+}
+</script>
+</body>
+</html>
